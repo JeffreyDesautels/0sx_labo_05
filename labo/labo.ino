@@ -1,8 +1,15 @@
+#pragma region definitions
 #include <LCD_I2C.h>
 #include <AccelStepper.h>
 #include <HCSR04.h>
 
 #define MOTOR_INTERFACE_TYPE 4
+
+#define BUZZER_PIN 2
+
+#define LED_PIN_RED 3
+#define LED_PIN_GREEN 4
+#define LED_PIN_BLUE 5
 
 #define IN_1 8
 #define IN_2 9
@@ -13,12 +20,13 @@
 #define ECHO_PIN 7
 
 LCD_I2C lcd(0x27, 16, 2);
-AccelStepper myStepper(MOTOR_INTERFACE_TYPE, IN_1, IN_3, IN_2, IN_4);
+AccelStepper moteur(MOTOR_INTERFACE_TYPE, IN_1, IN_3, IN_2, IN_4);
 HCSR04 hc(TRIGGER_PIN, ECHO_PIN);
 
 enum AppState { NORMAL,
                 TROP_PRES,
-                TROP_LOIN };
+                TROP_LOIN,
+                ALERTE };
 
 AppState appState = NORMAL;
 
@@ -32,6 +40,7 @@ unsigned long current_time = 0;
 int distance;
 int min_distance = 30;
 int max_distance = 60;
+int distance_alerte = 15;
 
 int angle;
 int min_angle = 10;
@@ -40,6 +49,7 @@ float tour = 2038;
 
 float max_step = (tour * max_angle) / 360;
 float min_step = (tour * min_angle) / 360;
+#pragma endregion
 
 #pragma region etats
 int normal_state() {
@@ -47,7 +57,7 @@ int normal_state() {
   static int last_position = 0;
 
   if (first_time) {
-    myStepper.setCurrentPosition(last_position);
+    moteur.setCurrentPosition(last_position);
     first_time = false;
   }
 
@@ -56,19 +66,24 @@ int normal_state() {
 
   angle = map(current_position, min_step, max_step, min_angle, max_angle);
 
-  myStepper.moveTo(current_position);
-  myStepper.run();
+  moteur.moveTo(current_position);
+  moteur.run();
 
-  if (myStepper.distanceToGo() == 0) {
-    myStepper.disableOutputs();
+  if (moteur.distanceToGo() == 0) {
+    moteur.disableOutputs();
   } else {
-    myStepper.enableOutputs();
+    moteur.enableOutputs();
   }
 
-  bool transition_T_P = distance < min_distance && (myStepper.distanceToGo() == 0);
-  bool transition_T_L = distance > max_distance && (myStepper.distanceToGo() == 0);
+  bool transition_A = distance <= distance_alerte;
+  bool transition_T_P = distance < min_distance && (moteur.distanceToGo() == 0);
+  bool transition_T_L = distance > max_distance && (moteur.distanceToGo() == 0);
 
-  if (transition_T_P) {
+  if (transition_A) {
+    first_time = true;
+    last_position = current_position;
+    appState = ALERTE;
+  } else if (transition_T_P) {
     first_time = true;
     last_position = current_position;
     appState = TROP_PRES;
@@ -82,9 +97,12 @@ int normal_state() {
 }
 
 void trop_pres_state() {
-  bool transition = distance > min_distance;
+  bool transition_A = distance <= distance_alerte;
+  bool transition_N = distance > min_distance;
 
-  if (transition) {
+  if (transition_A) {
+    appState = ALERTE;
+  } else if (transition_N) {
     appState = NORMAL;
   }
 }
@@ -94,6 +112,19 @@ void trop_loin_state() {
 
   if (transition) {
     appState = NORMAL;
+  }
+}
+
+void alerte_state() {
+  moteur.disableOutputs();
+
+  bool transition = distance > distance_alerte;
+
+  tone(BUZZER_PIN, 5000);
+
+  if (transition) {
+    noTone(BUZZER_PIN);
+    appState = TROP_PRES;
   }
 }
 
@@ -109,6 +140,10 @@ void state_manager() {
 
     case TROP_LOIN:
       trop_loin_state();
+      break;
+
+    case ALERTE:
+      alerte_state();
       break;
   }
 }
@@ -154,10 +189,15 @@ void print_task(unsigned long ct) {
     lcd.setCursor(0, 1);
     lcd.print("Obj  : ");
 
-    if (distance < 30) {
-      snprintf(lcdBuff[1], sizeof(lcdBuff[1]), "Trop pres");
-      Serial.println("Trop pres");
-    } else if (distance > 60) {
+    if (distance < min_distance) {
+      if (distance < distance_alerte) {
+        snprintf(lcdBuff[1], sizeof(lcdBuff[1]), "ALERTE");
+        Serial.println("ALERTE");
+      } else {
+        snprintf(lcdBuff[1], sizeof(lcdBuff[1]), "Trop pres");
+        Serial.println("Trop pres");
+      }
+    } else if (distance > max_distance) {
       snprintf(lcdBuff[1], sizeof(lcdBuff[1]), "Trop loin");
       Serial.println("Trop loin");
     } else {
@@ -174,12 +214,14 @@ void print_task(unsigned long ct) {
 void setup() {
   Serial.begin(115200);
 
+  pinMode(BUZZER_PIN, OUTPUT);
+
   lcd.begin();
   lcd.backlight();
 
-  myStepper.setMaxSpeed(500);
-  myStepper.setAcceleration(100);
-  myStepper.setSpeed(500);
+  moteur.setMaxSpeed(500);
+  moteur.setAcceleration(100);
+  moteur.setSpeed(500);
 
   start_task();
 }
