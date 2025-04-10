@@ -37,6 +37,12 @@ char lcdBuff[2][16] = {
 
 unsigned long current_time = 0;
 
+int frequency = 1;
+
+int red;
+int green;
+int blue;
+
 int distance;
 int min_distance = 30;
 int max_distance = 60;
@@ -56,10 +62,9 @@ int normal_state() {
   static bool first_time = true;
   static int last_position = 0;
 
-  if (first_time) {
-    moteur.setCurrentPosition(last_position);
-    first_time = false;
-  }
+  // if (first_time) {
+  //   first_time = false;
+  // }
 
   float current_position = map(distance, min_distance, max_distance, min_step, max_step);
   current_position = constrain(current_position, min_step, max_step);
@@ -81,15 +86,12 @@ int normal_state() {
 
   if (transition_A) {
     first_time = true;
-    last_position = current_position;
     appState = ALERTE;
   } else if (transition_T_P) {
     first_time = true;
-    last_position = current_position;
     appState = TROP_PRES;
   } else if (transition_T_L) {
     first_time = true;
-    last_position = current_position;
     appState = TROP_LOIN;
   }
 
@@ -115,20 +117,35 @@ void trop_loin_state() {
   }
 }
 
-void alerte_state() {
+void alerte_state(unsigned long ct) {
+  static unsigned long start_timer = 0;
+  static bool timer_started = false;
+  const long timer_interval = 3000;
+
   moteur.disableOutputs();
 
   bool transition = distance > distance_alerte;
+  bool cancel_transition = distance <= distance_alerte;
 
-  tone(BUZZER_PIN, 5000);
+  tone(BUZZER_PIN, frequency);
+  led_blink_task(ct);
 
-  if (transition) {
-    noTone(BUZZER_PIN);
-    appState = TROP_PRES;
+  if (transition) {        // detecte condition sortie etat
+    if (!timer_started) {  // demarre le timer si pas deja demarre
+      start_timer = ct;
+      timer_started = true;
+    } else if (ct - start_timer >= timer_interval) {  // change detat si le timer est supperieur a 3 secondes
+      noTone(BUZZER_PIN);
+      set_color_task(0, 0, 0);
+      timer_started = false;
+      appState = TROP_PRES;
+    }
+  } else {  // reinitialise le timer si la transition tombe a false
+    timer_started = false;
   }
 }
 
-void state_manager() {
+void state_manager(unsigned long ct) {
   switch (appState) {
     case NORMAL:
       normal_state();
@@ -143,7 +160,7 @@ void state_manager() {
       break;
 
     case ALERTE:
-      alerte_state();
+      alerte_state(ct);
       break;
   }
 }
@@ -208,6 +225,33 @@ void print_task(unsigned long ct) {
     lcd.print(lcdBuff[1]);
   }
 }
+
+void set_color_task(int R, int G, int B) {
+  digitalWrite(LED_PIN_RED, R);
+  digitalWrite(LED_PIN_GREEN, G);
+  digitalWrite(LED_PIN_BLUE, B);
+}
+
+int current_color = 0;
+void led_blink_task(unsigned long ct) {
+  static unsigned long previous_time = 0;
+  const long led_interval = 200;
+
+  if (ct - previous_time >= led_interval) {
+    previous_time = ct;
+
+    switch (current_color) {
+      case 0:
+        set_color_task(255, 0, 0);  // rouge
+        current_color++;
+        break;
+      case 1:
+        set_color_task(0, 0, 255);  // bleu
+        current_color = 0;
+        break;
+    }
+  }
+}
 #pragma endregion
 
 #pragma region setup - loop
@@ -216,12 +260,17 @@ void setup() {
 
   pinMode(BUZZER_PIN, OUTPUT);
 
+  pinMode(LED_PIN_RED, OUTPUT);
+  pinMode(LED_PIN_GREEN, OUTPUT);
+  pinMode(LED_PIN_BLUE, OUTPUT);
+
   lcd.begin();
   lcd.backlight();
 
   moteur.setMaxSpeed(500);
   moteur.setAcceleration(100);
   moteur.setSpeed(500);
+  moteur.setCurrentPosition(0);
 
   start_task();
 }
@@ -230,7 +279,7 @@ void loop() {
   current_time = millis();
 
   distance_task(current_time);
-  state_manager();
+  state_manager(current_time);
   print_task(current_time);
 }
 #pragma endregion
