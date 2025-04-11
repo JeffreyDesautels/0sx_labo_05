@@ -23,12 +23,16 @@ LCD_I2C lcd(0x27, 16, 2);
 AccelStepper motor(MOTOR_INTERFACE_TYPE, IN_1, IN_3, IN_2, IN_4);
 HCSR04 hc(TRIGGER_PIN, ECHO_PIN);
 
-enum AppState { NORMAL,
-                TOO_CLOSE,
-                TOO_FAR,
-                ALERT };
+enum StepperAppState { NORMAL,
+                       TOO_CLOSE,
+                       TOO_FAR };
 
-AppState appState = NORMAL;
+StepperAppState stepperAppState = NORMAL;
+
+enum AlertAppState { ALERT_OFF,
+                     ALERT_ON };
+
+AlertAppState alertAppState = ALERT_OFF;
 
 char lcdBuff[2][16] = {
   "                ",
@@ -37,11 +41,8 @@ char lcdBuff[2][16] = {
 
 unsigned long current_time = 0;
 
-int frequency = 1;
+int frequency = 1000;
 
-int red;
-int green;
-int blue;
 int current_color = 0;
 
 int distance;
@@ -60,13 +61,6 @@ float min_step = (lap * min_angle) / 360;
 
 #pragma region states
 int normal_state() {
-  static bool first_time = true;
-  static int last_position = 0;
-
-  // if (first_time) {
-  //   first_time = false;
-  // }
-
   float current_position = map(distance, min_distance, max_distance, min_step, max_step);
   current_position = constrain(current_position, min_step, max_step);
 
@@ -75,58 +69,55 @@ int normal_state() {
   motor.moveTo(current_position);
   motor.run();
 
-  if (motor.distanceToGo() == 0) {
-    motor.disableOutputs();
-  } else {
-    motor.enableOutputs();
-  }
-
-  bool transition_A = distance <= alert_distance;
   bool transition_T_C = distance < min_distance && (motor.distanceToGo() == 0);
   bool transition_T_F = distance > max_distance && (motor.distanceToGo() == 0);
 
-  if (transition_A) {
-    first_time = true;
-    appState = ALERT;
-  } else if (transition_T_C) {
-    first_time = true;
-    appState = TOO_CLOSE;
+  if (transition_T_C) {
+    stepperAppState = TOO_CLOSE;
   } else if (transition_T_F) {
-    first_time = true;
-    appState = TOO_FAR;
+    stepperAppState = TOO_FAR;
   }
 
   return angle;
 }
 
 void too_close_state() {
-  bool transition_A = distance <= alert_distance;
+  motor.disableOutputs();
+
   bool transition_N = distance > min_distance;
 
-  if (transition_A) {
-    appState = ALERT;
-  } else if (transition_N) {
-    appState = NORMAL;
+  if (transition_N) {
+    stepperAppState = NORMAL;
   }
 }
 
 void too_far_state() {
+  motor.disableOutputs();
+
   bool transition = distance < max_distance;
 
   if (transition) {
-    appState = NORMAL;
+    stepperAppState = NORMAL;
   }
 }
 
-void alert_state(unsigned long ct) {
+void alert_off_state() {
+  bool transition = distance < alert_distance;
+
+  noTone(BUZZER_PIN);
+  set_color_task(0, 0, 0);
+
+  if (transition) {
+    alertAppState = ALERT_ON;
+  }
+}
+
+void alert_on_state(unsigned long ct) {
   static unsigned long start_timer = 0;
   static bool timer_started = false;
   const long timer_interval = 3000;
 
-  motor.disableOutputs();
-
   bool transition = distance > alert_distance;
-  bool cancel_transition = distance <= alert_distance;
 
   tone(BUZZER_PIN, frequency);
   led_blink_task(ct);
@@ -136,18 +127,16 @@ void alert_state(unsigned long ct) {
       start_timer = ct;
       timer_started = true;
     } else if (ct - start_timer >= timer_interval) {  // change detat si le timer est supperieur a 3 secondes
-      noTone(BUZZER_PIN);
-      set_color_task(0, 0, 0);
       timer_started = false;
-      appState = TOO_CLOSE;
+      alertAppState = ALERT_OFF;
     }
   } else {  // reinitialise le timer si la transition tombe a false
     timer_started = false;
   }
 }
 
-void state_manager(unsigned long ct) {
-  switch (appState) {
+void stepper_state_manager() {
+  switch (stepperAppState) {
     case NORMAL:
       normal_state();
       break;
@@ -159,9 +148,17 @@ void state_manager(unsigned long ct) {
     case TOO_FAR:
       too_far_state();
       break;
+  }
+}
 
-    case ALERT:
-      alert_state(ct);
+void alert_state_manager(unsigned long ct) {
+  switch (alertAppState) {
+    case ALERT_OFF:
+      alert_off_state();
+      break;
+
+    case ALERT_ON:
+      alert_on_state(ct);
       break;
   }
 }
@@ -228,9 +225,9 @@ void print_task(unsigned long ct) {
 }
 
 void set_color_task(int R, int G, int B) {
-  digitalWrite(LED_PIN_RED, R);
-  digitalWrite(LED_PIN_GREEN, G);
-  digitalWrite(LED_PIN_BLUE, B);
+  analogWrite(LED_PIN_RED, R);
+  analogWrite(LED_PIN_GREEN, G);
+  analogWrite(LED_PIN_BLUE, B);
 }
 
 void led_blink_task(unsigned long ct) {
@@ -279,7 +276,8 @@ void loop() {
   current_time = millis();
 
   distance_task(current_time);
-  state_manager(current_time);
+  stepper_state_manager();
+  alert_state_manager(current_time);
   print_task(current_time);
 }
 #pragma endregion
