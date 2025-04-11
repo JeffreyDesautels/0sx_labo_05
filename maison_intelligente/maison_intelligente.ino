@@ -20,13 +20,13 @@
 #define ECHO_PIN 7
 
 LCD_I2C lcd(0x27, 16, 2);
-AccelStepper moteur(MOTOR_INTERFACE_TYPE, IN_1, IN_3, IN_2, IN_4);
+AccelStepper motor(MOTOR_INTERFACE_TYPE, IN_1, IN_3, IN_2, IN_4);
 HCSR04 hc(TRIGGER_PIN, ECHO_PIN);
 
 enum AppState { NORMAL,
-                TROP_PRES,
-                TROP_LOIN,
-                ALERTE };
+                TOO_CLOSE,
+                TOO_FAR,
+                ALERT };
 
 AppState appState = NORMAL;
 
@@ -42,22 +42,23 @@ int frequency = 1;
 int red;
 int green;
 int blue;
+int current_color = 0;
 
 int distance;
 int min_distance = 30;
 int max_distance = 60;
-int distance_alerte = 15;
+int alert_distance = 15;
 
 int angle;
 int min_angle = 10;
 int max_angle = 170;
-float tour = 2038;
+float lap = 2038;
 
-float max_step = (tour * max_angle) / 360;
-float min_step = (tour * min_angle) / 360;
+float max_step = (lap * max_angle) / 360;
+float min_step = (lap * min_angle) / 360;
 #pragma endregion
 
-#pragma region etats
+#pragma region states
 int normal_state() {
   static bool first_time = true;
   static int last_position = 0;
@@ -71,45 +72,45 @@ int normal_state() {
 
   angle = map(current_position, min_step, max_step, min_angle, max_angle);
 
-  moteur.moveTo(current_position);
-  moteur.run();
+  motor.moveTo(current_position);
+  motor.run();
 
-  if (moteur.distanceToGo() == 0) {
-    moteur.disableOutputs();
+  if (motor.distanceToGo() == 0) {
+    motor.disableOutputs();
   } else {
-    moteur.enableOutputs();
+    motor.enableOutputs();
   }
 
-  bool transition_A = distance <= distance_alerte;
-  bool transition_T_P = distance < min_distance && (moteur.distanceToGo() == 0);
-  bool transition_T_L = distance > max_distance && (moteur.distanceToGo() == 0);
+  bool transition_A = distance <= alert_distance;
+  bool transition_T_C = distance < min_distance && (motor.distanceToGo() == 0);
+  bool transition_T_F = distance > max_distance && (motor.distanceToGo() == 0);
 
   if (transition_A) {
     first_time = true;
-    appState = ALERTE;
-  } else if (transition_T_P) {
+    appState = ALERT;
+  } else if (transition_T_C) {
     first_time = true;
-    appState = TROP_PRES;
-  } else if (transition_T_L) {
+    appState = TOO_CLOSE;
+  } else if (transition_T_F) {
     first_time = true;
-    appState = TROP_LOIN;
+    appState = TOO_FAR;
   }
 
   return angle;
 }
 
-void trop_pres_state() {
-  bool transition_A = distance <= distance_alerte;
+void too_close_state() {
+  bool transition_A = distance <= alert_distance;
   bool transition_N = distance > min_distance;
 
   if (transition_A) {
-    appState = ALERTE;
+    appState = ALERT;
   } else if (transition_N) {
     appState = NORMAL;
   }
 }
 
-void trop_loin_state() {
+void too_far_state() {
   bool transition = distance < max_distance;
 
   if (transition) {
@@ -117,15 +118,15 @@ void trop_loin_state() {
   }
 }
 
-void alerte_state(unsigned long ct) {
+void alert_state(unsigned long ct) {
   static unsigned long start_timer = 0;
   static bool timer_started = false;
   const long timer_interval = 3000;
 
-  moteur.disableOutputs();
+  motor.disableOutputs();
 
-  bool transition = distance > distance_alerte;
-  bool cancel_transition = distance <= distance_alerte;
+  bool transition = distance > alert_distance;
+  bool cancel_transition = distance <= alert_distance;
 
   tone(BUZZER_PIN, frequency);
   led_blink_task(ct);
@@ -138,7 +139,7 @@ void alerte_state(unsigned long ct) {
       noTone(BUZZER_PIN);
       set_color_task(0, 0, 0);
       timer_started = false;
-      appState = TROP_PRES;
+      appState = TOO_CLOSE;
     }
   } else {  // reinitialise le timer si la transition tombe a false
     timer_started = false;
@@ -151,16 +152,16 @@ void state_manager(unsigned long ct) {
       normal_state();
       break;
 
-    case TROP_PRES:
-      trop_pres_state();
+    case TOO_CLOSE:
+      too_close_state();
       break;
 
-    case TROP_LOIN:
-      trop_loin_state();
+    case TOO_FAR:
+      too_far_state();
       break;
 
-    case ALERTE:
-      alerte_state(ct);
+    case ALERT:
+      alert_state(ct);
       break;
   }
 }
@@ -207,7 +208,7 @@ void print_task(unsigned long ct) {
     lcd.print("Obj  : ");
 
     if (distance < min_distance) {
-      if (distance < distance_alerte) {
+      if (distance < alert_distance) {
         snprintf(lcdBuff[1], sizeof(lcdBuff[1]), "ALERTE");
         Serial.println("ALERTE");
       } else {
@@ -232,7 +233,6 @@ void set_color_task(int R, int G, int B) {
   digitalWrite(LED_PIN_BLUE, B);
 }
 
-int current_color = 0;
 void led_blink_task(unsigned long ct) {
   static unsigned long previous_time = 0;
   const long led_interval = 200;
@@ -267,10 +267,10 @@ void setup() {
   lcd.begin();
   lcd.backlight();
 
-  moteur.setMaxSpeed(500);
-  moteur.setAcceleration(100);
-  moteur.setSpeed(500);
-  moteur.setCurrentPosition(0);
+  motor.setMaxSpeed(500);
+  motor.setAcceleration(100);
+  motor.setSpeed(500);
+  motor.setCurrentPosition(0);
 
   start_task();
 }
@@ -290,7 +290,7 @@ void start_task() {
   lcd.print("2255309");
 
   lcd.setCursor(0, 1);
-  lcd.print("Labo 4B");
+  lcd.print("Labo 5");
 
   delay(2000);
   lcd.clear();
